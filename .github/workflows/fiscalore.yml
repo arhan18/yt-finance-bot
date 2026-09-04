@@ -1,0 +1,188 @@
+name: Fiscalore Video Pipeline
+
+on:
+  schedule:
+    # Generate video daily at 10:00 UTC (6am EST / 11am UK)
+    - cron: '0 10 * * *'
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: 'Video topic'
+        required: false
+      upload_now:
+        description: 'Upload immediately after generation'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  VIDEO_DIR: ./storage/tasks
+  OUTPUT_DIR: ./output
+
+jobs:
+  generate-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install google-api-python-client google-auth google-auth-oauthlib
+          
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        
+      - name: Create output directory
+        run: mkdir -p ${{ env.OUTPUT_DIR }}
+        
+      - name: Generate video
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        run: |
+          # Get today's topic or use provided topic
+          TOPIC="${{ github.event.inputs.topic }}"
+          if [ -z "$TOPIC" ]; then
+            # Rotate through finance topics
+            TOPICS=(
+              "The Psychology of Money"
+              "Why Most Investors Fail"
+              "The Power of Compound Interest"
+              "Hidden Tax on Your Savings"
+              "How Inflation Steals Your Wealth"
+              "The Secret to Building Wealth"
+              "Why Rich Get Richer"
+              "Money Myths Exposed"
+              "The Future of Finance"
+              "How Banks Really Work"
+            )
+            DAY_OF_YEAR=$(date +%j)
+            INDEX=$((DAY_OF_YEAR % ${#TOPICS[@]}))
+            TOPIC="${TOPICS[$INDEX]}"
+          fi
+          
+          echo "Generating video: $TOPIC"
+          
+          # Generate video using MoneyPrinterTurbo CLI
+          python3 cli.py \
+            --video-subject "$TOPIC" \
+            --video-language en \
+            --video-source pexels \
+            --video-aspect 16:9 \
+            --voice-name en-US-GuyNeural \
+            --subtitle-enabled \
+            --video-clip-duration 5 \
+            --bgm-type random \
+            --bgm-volume 0.15 \
+            --video-count 1
+            
+          # Find the latest generated video
+          LATEST_VIDEO=$(ls -t ${{ env.VIDEO_DIR }}/*/final-*.mp4 2>/dev/null | head -1)
+          
+          if [ -z "$LATEST_VIDEO" ]; then
+            echo "Error: No video generated"
+            exit 1
+          fi
+          
+          echo "Generated video: $LATEST_VIDEO"
+          
+          # Copy to output directory with timestamp
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          OUTPUT_FILE="${{ env.OUTPUT_DIR }}/fiscalore_${TIMESTAMP}.mp4"
+          cp "$LATEST_VIDEO" "$OUTPUT_FILE"
+          echo "OUTPUT_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
+          echo "VIDEO_TOPIC=$TOPIC" >> $GITHUB_ENV
+          
+      - name: Upload to YouTube
+        if: github.event.inputs.upload_now == 'true' || github.event_name == 'schedule'
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          # Generate description
+          DESCRIPTION="Discover the truth about ${{ env.VIDEO_TOPIC }}. 
+
+This video is for educational and entertainment purposes only. Nothing here is financial advice.
+
+#Fiscalore #Finance #Money #Investing #Wealth"
+          
+          # Upload to YouTube
+          python3 youtube_upload.py \
+            "${{ env.OUTPUT_FILE }}" \
+            --title "${{ env.VIDEO_TOPIC }} | Fiscalore" \
+            --description "$DESCRIPTION" \
+            --tags finance money investing wealth fiscalore \
+            --privacy public
+            
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fiscalore-video-${{ github.run_number }}
+          path: ${{ env.OUTPUT_DIR }}/*.mp4
+          retention-days: 7
+          
+  upload-scheduled:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    needs: generate-video
+    timeout-minutes: 10
+    
+    steps:
+      - name: Download latest video
+        uses: actions/download-artifact@v4
+        with:
+          name: fiscalore-video-${{ github.run_number }}
+          path: ./video
+          
+      - name: Check if today is upload day (Tue/Thu/Sat)
+        id: check-day
+        run: |
+          DAY_OF_WEEK=$(date +%u)
+          if [ "$DAY_OF_WEEK" -eq 2 ] || [ "$DAY_OF_WEEK" -eq 4 ] || [ "$DAY_OF_WEEK" -eq 6 ]; then
+            echo "should_upload=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_upload=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Upload to YouTube
+        if: steps.check-day.outputs.should_upload == 'true'
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          # Find video file
+          VIDEO_FILE=$(find ./video -name "*.mp4" | head -1)
+          
+          if [ -z "$VIDEO_FILE" ]; then
+            echo "No video found to upload"
+            exit 0
+          fi
+          
+          # Get topic from filename
+          TOPIC=$(basename "$VIDEO_FILE" | sed 's/fiscalore_[0-9_]*.mp4//' | tr '_' ' ')
+          
+          # Generate description
+          DESCRIPTION="Discover the truth about $TOPIC. 
+
+This video is for educational and entertainment purposes only. Nothing here is financial advice.
+
+#Fiscalore #Finance #Money #Investing #Wealth"
+          
+          # Upload to YouTube
+          python3 youtube_upload.py \
+            "$VIDEO_FILE" \
+            --title "$TOPIC | Fiscalore" \
+            --description "$DESCRIPTION" \
+            --tags finance money investing wealth fiscalore \
+            --privacy public
