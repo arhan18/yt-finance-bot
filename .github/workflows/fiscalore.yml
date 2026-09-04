@@ -1,28 +1,18 @@
-name: Fiscalore Video Pipeline
+name: Fiscalore Pipeline
 
 on:
   schedule:
-    # Generate video daily at 10:00 UTC (6am EST / 11am UK)
+    # Run daily at 10:00 UTC (6am EST / 11am UK)
     - cron: '0 10 * * *'
-  workflow_dispatch:
-    inputs:
-      topic:
-        description: 'Video topic'
-        required: false
-      upload_now:
-        description: 'Upload immediately after generation'
-        required: false
-        default: 'false'
-        type: boolean
 
 env:
   VIDEO_DIR: ./storage/tasks
   OUTPUT_DIR: ./output
 
 jobs:
-  generate-video:
+  generate-content:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     
     steps:
       - name: Checkout repository
@@ -42,37 +32,39 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
         
       - name: Create output directory
-        run: mkdir -p ${{ env.OUTPUT_DIR }}
+        run: mkdir -p ${{ env.OUTPUT_DIR }}/longform ${{ env.OUTPUT_DIR }}/shorts
         
-      - name: Generate video
+      - name: Get day info
+        id: dayinfo
+        run: |
+          DAY_OF_WEEK=$(date +%u)
+          echo "day_of_week=$DAY_OF_WEEK" >> $GITHUB_OUTPUT
+          echo "Day of week: $DAY_OF_WEEK (1=Mon, 7=Sun)"
+          
+      - name: Generate long-form video (Tue/Thu/Sat)
+        if: steps.dayinfo.outputs.day_of_week == '2' || steps.dayinfo.outputs.day_of_week == '4' || steps.dayinfo.outputs.day_of_week == '6'
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         run: |
-          # Get today's topic or use provided topic
-          TOPIC="${{ github.event.inputs.topic }}"
-          if [ -z "$TOPIC" ]; then
-            # Rotate through finance topics
-            TOPICS=(
-              "The Psychology of Money"
-              "Why Most Investors Fail"
-              "The Power of Compound Interest"
-              "Hidden Tax on Your Savings"
-              "How Inflation Steals Your Wealth"
-              "The Secret to Building Wealth"
-              "Why Rich Get Richer"
-              "Money Myths Exposed"
-              "The Future of Finance"
-              "How Banks Really Work"
-            )
-            DAY_OF_YEAR=$(date +%j)
-            INDEX=$((DAY_OF_YEAR % ${#TOPICS[@]}))
-            TOPIC="${TOPICS[$INDEX]}"
-          fi
+          TOPICS=(
+            "The Psychology of Money"
+            "Why Most Investors Fail"
+            "The Power of Compound Interest"
+            "Hidden Tax on Your Savings"
+            "How Inflation Steals Your Wealth"
+            "The Secret to Building Wealth"
+            "Why Rich Get Richer"
+            "Money Myths Exposed"
+            "The Future of Finance"
+            "How Banks Really Work"
+          )
+          DAY_OF_YEAR=$(date +%j)
+          INDEX=$((DAY_OF_YEAR % ${#TOPICS[@]}))
+          TOPIC="${TOPICS[$INDEX]}"
           
-          echo "Generating video: $TOPIC"
+          echo "Generating long-form video: $TOPIC"
           
-          # Generate video using MoneyPrinterTurbo CLI
           python3 cli.py \
             --video-subject "$TOPIC" \
             --video-language en \
@@ -84,8 +76,7 @@ jobs:
             --bgm-type random \
             --bgm-volume 0.15 \
             --video-count 1
-            
-          # Find the latest generated video
+          
           LATEST_VIDEO=$(ls -t ${{ env.VIDEO_DIR }}/*/final-*.mp4 2>/dev/null | head -1)
           
           if [ -z "$LATEST_VIDEO" ]; then
@@ -93,96 +84,117 @@ jobs:
             exit 1
           fi
           
-          echo "Generated video: $LATEST_VIDEO"
-          
-          # Copy to output directory with timestamp
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          OUTPUT_FILE="${{ env.OUTPUT_DIR }}/fiscalore_${TIMESTAMP}.mp4"
+          OUTPUT_FILE="${{ env.OUTPUT_DIR }}/longform/fiscalore_${TIMESTAMP}.mp4"
           cp "$LATEST_VIDEO" "$OUTPUT_FILE"
-          echo "OUTPUT_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
-          echo "VIDEO_TOPIC=$TOPIC" >> $GITHUB_ENV
+          echo "LONGFORM_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
+          echo "LONGFORM_TOPIC=$TOPIC" >> $GITHUB_ENV
+          echo "HAS_LONGFORM=true" >> $GITHUB_ENV
           
-      - name: Upload to YouTube
-        if: github.event.inputs.upload_now == 'true' || github.event_name == 'schedule'
+      - name: Upload long-form to YouTube
+        if: steps.dayinfo.outputs.day_of_week == '2' || steps.dayinfo.outputs.day_of_week == '4' || steps.dayinfo.outputs.day_of_week == '6'
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         run: |
-          # Generate description
-          DESCRIPTION="Discover the truth about ${{ env.VIDEO_TOPIC }}. 
+          if [ "${{ env.HAS_LONGFORM }}" != "true" ]; then
+            echo "No long-form video to upload"
+            exit 0
+          fi
+          
+          DESCRIPTION="Discover the truth about ${{ env.LONGFORM_TOPIC }}. 
 
 This video is for educational and entertainment purposes only. Nothing here is financial advice.
 
 #Fiscalore #Finance #Money #Investing #Wealth"
           
-          # Upload to YouTube
           python3 youtube_upload.py \
-            "${{ env.OUTPUT_FILE }}" \
-            --title "${{ env.VIDEO_TOPIC }} | Fiscalore" \
+            "${{ env.LONGFORM_FILE }}" \
+            --title "${{ env.LONGFORM_TOPIC }} | Fiscalore" \
             --description "$DESCRIPTION" \
             --tags finance money investing wealth fiscalore \
             --privacy public
             
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: fiscalore-video-${{ github.run_number }}
-          path: ${{ env.OUTPUT_DIR }}/*.mp4
-          retention-days: 7
-          
-  upload-scheduled:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
-    needs: generate-video
-    timeout-minutes: 10
-    
-    steps:
-      - name: Download latest video
-        uses: actions/download-artifact@v4
-        with:
-          name: fiscalore-video-${{ github.run_number }}
-          path: ./video
-          
-      - name: Check if today is upload day (Tue/Thu/Sat)
-        id: check-day
+      - name: Generate shorts (Mon/Wed/Fri/Sat)
+        if: steps.dayinfo.outputs.day_of_week == '1' || steps.dayinfo.outputs.day_of_week == '3' || steps.dayinfo.outputs.day_of_week == '5' || steps.dayinfo.outputs.day_of_week == '6'
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         run: |
-          DAY_OF_WEEK=$(date +%u)
-          if [ "$DAY_OF_WEEK" -eq 2 ] || [ "$DAY_OF_WEEK" -eq 4 ] || [ "$DAY_OF_WEEK" -eq 6 ]; then
-            echo "should_upload=true" >> $GITHUB_OUTPUT
-          else
-            echo "should_upload=false" >> $GITHUB_OUTPUT
+          SHORT_TOPICS=(
+            "Money hack nobody tells you"
+            "Rich people don't do this"
+            "Stop losing money on this"
+            "The 1% rule for wealth"
+            "Why you're always broke"
+            "Millionaire morning routine"
+            "The truth about saving"
+            "Invest like the rich"
+            "Financial freedom in 5 steps"
+            "Hidden money secrets"
+          )
+          DAY_OF_YEAR=$(date +%j)
+          INDEX=$((DAY_OF_YEAR % ${#SHORT_TOPICS[@]}))
+          TOPIC="${SHORT_TOPICS[$INDEX]}"
+          
+          echo "Generating short: $TOPIC"
+          
+          python3 cli.py \
+            --video-subject "$TOPIC" \
+            --video-language en \
+            --video-source pexels \
+            --video-aspect 9:16 \
+            --voice-name en-US-GuyNeural \
+            --subtitle-enabled \
+            --video-clip-duration 3 \
+            --bgm-type random \
+            --bgm-volume 0.2 \
+            --video-count 1
+          
+          LATEST_VIDEO=$(ls -t ${{ env.VIDEO_DIR }}/*/final-*.mp4 2>/dev/null | head -1)
+          
+          if [ -z "$LATEST_VIDEO" ]; then
+            echo "Error: No short generated"
+            exit 1
           fi
           
-      - name: Upload to YouTube
-        if: steps.check-day.outputs.should_upload == 'true'
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          OUTPUT_FILE="${{ env.OUTPUT_DIR }}/shorts/fiscalore_short_${TIMESTAMP}.mp4"
+          cp "$LATEST_VIDEO" "$OUTPUT_FILE"
+          echo "SHORTS_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
+          echo "SHORTS_TOPIC=$TOPIC" >> $GITHUB_ENV
+          
+      - name: Upload short to YouTube
+        if: steps.dayinfo.outputs.day_of_week == '1' || steps.dayinfo.outputs.day_of_week == '3' || steps.dayinfo.outputs.day_of_week == '5' || steps.dayinfo.outputs.day_of_week == '6'
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         run: |
-          # Find video file
-          VIDEO_FILE=$(find ./video -name "*.mp4" | head -1)
-          
-          if [ -z "$VIDEO_FILE" ]; then
-            echo "No video found to upload"
+          if [ -z "${{ env.SHORTS_FILE }}" ]; then
+            echo "No short to upload"
             exit 0
           fi
           
-          # Get topic from filename
-          TOPIC=$(basename "$VIDEO_FILE" | sed 's/fiscalore_[0-9_]*.mp4//' | tr '_' ' ')
-          
-          # Generate description
-          DESCRIPTION="Discover the truth about $TOPIC. 
+          DESCRIPTION="Discover the truth about ${{ env.SHORTS_TOPIC }}. 
 
 This video is for educational and entertainment purposes only. Nothing here is financial advice.
 
-#Fiscalore #Finance #Money #Investing #Wealth"
+#Fiscalore #Finance #Money #Investing #Wealth #Shorts"
           
-          # Upload to YouTube
           python3 youtube_upload.py \
-            "$VIDEO_FILE" \
-            --title "$TOPIC | Fiscalore" \
+            "${{ env.SHORTS_FILE }}" \
+            --title "${{ env.SHORTS_TOPIC }} | Fiscalore" \
             --description "$DESCRIPTION" \
-            --tags finance money investing wealth fiscalore \
+            --tags finance money investing wealth fiscalore shorts \
             --privacy public
+            
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fiscalore-videos-${{ github.run_number }}
+          path: |
+            ${{ env.OUTPUT_DIR }}/longform/*.mp4
+            ${{ env.OUTPUT_DIR }}/shorts/*.mp4
+          retention-days: 7
