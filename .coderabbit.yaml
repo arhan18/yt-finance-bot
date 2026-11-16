@@ -1,0 +1,68 @@
+# CodeRabbit review config for this repo.
+# Rules mirror the repo AGENTS.md so bot review matches agent review.
+language: en-US
+reviews:
+  profile: chill
+  high_level_summary: true
+  high_level_summary_instructions: |
+    One line stating the intent of the change, then a short bullet list of the
+    areas that changed and any behavior a reviewer must verify.
+    No marketing language, no restating the diff.
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/__pycache__/**"
+    - "!**/.venv/**"
+    - "!**/venv/**"
+    - "!**/node_modules/**"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/*.lock"
+    - "!**/*.min.*"
+  path_instructions:
+    - path: "**/*.py"
+      instructions: |
+        - Validate and sanitize every external input at the boundary. Flag
+          unvalidated request data, unescaped output, and path or command
+          injection risks.
+        - Never hardcode secrets, tokens, or API keys. Flag credentials in code
+          and fixtures that look real.
+        - Handle failures explicitly. Flag bare except blocks, swallowed
+          exceptions, and silent fallbacks that hide errors.
+        - Keep one source of truth. Flag duplicated logic that should be a
+          shared helper, and flag helpers that are never used.
+        - No fabricated results. Flag placeholder metrics, fake benchmarks, or
+          invented claims in code, fixtures, or docs.
+        - Keep the diff minimal and the change coherent with the existing code.
+          Flag unrelated refactors mixed into a feature change.
+    - path: "**/*.{ts,tsx,js,jsx,html,css}"
+      instructions: |
+        - Prefer native web platform APIs over new dependencies: <dialog>, popover,
+          details/summary, anchor positioning, container queries, view transitions.
+        - Accessibility is required: semantic HTML, keyboard operability, focus
+          management, form labels, announced errors, prefers-reduced-motion.
+        - Never trust client input. Validation and authorization belong on the server.
+  tools:
+    gitleaks:
+      enabled: true
+    ruff:
+      enabled: true
+    markdownlint:
+      enabled: true
+    shellcheck:
+      enabled: true
+    actionlint:
+      enabled: true
+    zizmor:
+      enabled: true
+    htmlhint:
+      enabled: true
+    stylelint:
+      enabled: true
+    opengrep:
+      enabled: true
+    checkov:
+      enabled: true
+    hadolint:
+      enabled: true
